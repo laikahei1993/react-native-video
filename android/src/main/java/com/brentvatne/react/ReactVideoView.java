@@ -17,6 +17,9 @@ import android.view.View;
 import android.view.Window;
 import android.webkit.CookieManager;
 import android.widget.MediaController;
+import android.media.AudioManager;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
 
 import com.android.vending.expansion.zipfile.APKExpansionSupport;
 import com.android.vending.expansion.zipfile.ZipResourceFile;
@@ -51,7 +54,8 @@ public class ReactVideoView extends ScalableVideoView implements
     MediaPlayer.OnCompletionListener,
     MediaPlayer.OnInfoListener,
     LifecycleEventListener,
-    MediaController.MediaPlayerControl {
+    MediaController.MediaPlayerControl,
+    AudioManager.OnAudioFocusChangeListener {
 
     public enum Events {
         EVENT_LOAD_START("onVideoLoadStart"),
@@ -112,7 +116,9 @@ public class ReactVideoView extends ScalableVideoView implements
     private Handler mProgressUpdateHandler = new Handler();
     private Runnable mProgressUpdateRunnable = null;
     private Handler videoControlHandler = new Handler();
+    private Handler mAudioFocusHandler = new Handler();
     private MediaController mediaController;
+    private AudioManager audioManager;
 
     private String mSrcUriString = null;
     private String mSrcType = "mp4";
@@ -149,6 +155,8 @@ public class ReactVideoView extends ScalableVideoView implements
         mThemedReactContext = themedReactContext;
         mEventEmitter = themedReactContext.getJSModule(RCTEventEmitter.class);
         themedReactContext.addLifecycleEventListener(this);
+
+        audioManager = (AudioManager) themedReactContext.getSystemService(Context.AUDIO_SERVICE);
 
         initializeMediaPlayerIfNeeded();
         setSurfaceTextureListener(this);
@@ -248,6 +256,27 @@ public class ReactVideoView extends ScalableVideoView implements
             mThemedReactContext.removeLifecycleEventListener(this);
             mThemedReactContext = null;
         }
+    }
+
+    private boolean requestAudioFocus() {
+        int result = AudioManager.AUDIOFOCUS_REQUEST_FAILED;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            result = audioManager.requestAudioFocus(this,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN);
+        } else { // API 26 and later
+            AudioAttributes mPlaybackAttributes = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build();
+            AudioFocusRequest mFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(mPlaybackAttributes)
+                    .setAcceptsDelayedFocusGain(true)
+                    .setOnAudioFocusChangeListener(this, mAudioFocusHandler)
+                    .build();
+            result = audioManager.requestAudioFocus(mFocusRequest);
+        }
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
     }
 
     public void setSrc(final String uriString, final String type, final boolean isNetwork, final boolean isAsset, final ReadableMap requestHeaders) {
@@ -397,17 +426,21 @@ public class ReactVideoView extends ScalableVideoView implements
         if (mPaused) {
             if (mMediaPlayer.isPlaying()) {
                 pause();
+                audioManager.abandonAudioFocus(this);
             }
         } else {
             if (!mMediaPlayer.isPlaying()) {
-                start();
-                // Setting the rate unpauses, so we have to wait for an unpause
-                if (mRate != mActiveRate) { 
-                    setRateModifier(mRate);
-                }
+                boolean hasAudioFocus = requestAudioFocus();
+                if (hasAudioFocus) {
+                    start();
+                    // Setting the rate unpauses, so we have to wait for an unpause
+                    if (mRate != mActiveRate) {
+                        setRateModifier(mRate);
+                    }
 
-                // Also Start the Progress Update Handler
-                mProgressUpdateHandler.post(mProgressUpdateRunnable);
+                    // Also Start the Progress Update Handler
+                    mProgressUpdateHandler.post(mProgressUpdateRunnable);
+                }
             }
         }
         setKeepScreenOn(!mPaused);
@@ -605,6 +638,10 @@ public class ReactVideoView extends ScalableVideoView implements
             default:
         }
         return false;
+    }
+
+    @Override
+    public void onAudioFocusChange(int focusChange) {
     }
 
     @Override
